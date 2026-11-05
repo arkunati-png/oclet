@@ -1,0 +1,416 @@
+From e4a30c85d440e8c50ba0863a03c92a0c036e03ca Mon Sep 17 00:00:00 2001
+From: Abhishek Kunati <itsmekunati@gmail.com>
+Date: Thu, 5 Nov 2026 20:24:08 +0000
+Subject: [PATCH 4/8] octet: 10s block target and per-block LWMA difficulty
+
+nPowTargetSpacing = 10 on all networks. GetNextWorkRequired now uses LWMA-1
+(window 90 blocks, 60 on regtest) instead of the 2016-block retarget; regtest
+keeps fixed minimum difficulty unless started with -test=lwma.
+PermittedDifficultyTransition (headers-sync anti-DoS heuristic) now always
+returns true because a per-block algorithm has no fixed boundary to bound.
+nPowTargetTimespan is kept only as the reporting/versionbits period.
+Main and testnet activate all soft forks from genesis.
+---
+ src/chainparams.cpp        |   1 +
+ src/common/args.cpp        |   1 +
+ src/consensus/params.h     |   6 ++
+ src/kernel/chainparams.cpp |  65 +++++++-------
+ src/kernel/chainparams.h   |   1 +
+ src/pow.cpp                | 172 ++++++++++++++-----------------------
+ src/pow.h                  |  14 +--
+ 7 files changed, 112 insertions(+), 148 deletions(-)
+
+diff --git a/src/chainparams.cpp b/src/chainparams.cpp
+index bab4384..d37b7d9 100644
+--- a/src/chainparams.cpp
++++ b/src/chainparams.cpp
+@@ -119,6 +119,7 @@ void ReadRegTestArgs(const ArgsManager& args, CChainParams::RegTestOptions& opti
+ {
+     if (auto value = args.GetBoolArg("-fastprune")) options.fastprune = *value;
+     if (HasTestOption(args, "bip94")) options.enforce_bip94 = true;
++    if (HasTestOption(args, "lwma")) options.lwma = true;
+ 
+     HandleDeploymentArgs(args, options.dep_opts);
+ }
+diff --git a/src/common/args.cpp b/src/common/args.cpp
+index de6b4fe..194d127 100644
+--- a/src/common/args.cpp
++++ b/src/common/args.cpp
+@@ -846,6 +846,7 @@ const std::vector<std::string> TEST_OPTIONS_DOC{
+     "addrman (use deterministic addrman)",
+     "reindex_after_failure_noninteractive_yes (When asked for a reindex after failure interactively, simulate as-if answered with 'yes')",
+     "bip94 (enforce BIP94 consensus rules)",
++    "lwma (enable per-block LWMA difficulty adjustment on regtest)",
+ };
+ 
+ bool HasTestOption(const ArgsManager& args, const std::string& test_option)
+diff --git a/src/consensus/params.h b/src/consensus/params.h
+index 99096e0..e26585c 100644
+--- a/src/consensus/params.h
++++ b/src/consensus/params.h
+@@ -122,7 +122,13 @@ struct Params {
+     bool enforce_BIP94;
+     bool fPowNoRetargeting;
+     int64_t nPowTargetSpacing;
++    /**
++     * Retained as a reporting/versionbits period (DifficultyAdjustmentInterval()).
++     * Difficulty itself is retargeted every block by LWMA, see pow.cpp.
++     */
+     int64_t nPowTargetTimespan;
++    /** Number of blocks in the LWMA difficulty averaging window. */
++    int64_t lwma_window;
+     std::chrono::seconds PowTargetSpacing() const
+     {
+         return std::chrono::seconds{nPowTargetSpacing};
+diff --git a/src/kernel/chainparams.cpp b/src/kernel/chainparams.cpp
+index 744af37..eb51fe5 100644
+--- a/src/kernel/chainparams.cpp
++++ b/src/kernel/chainparams.cpp
+@@ -124,20 +124,19 @@ public:
+         consensus.signet_blocks = false;
+         consensus.signet_challenge.clear();
+         consensus.nSubsidyHalvingInterval = 210000;
+-        consensus.script_flag_exceptions.emplace( // BIP16 exception
+-            uint256{"00000000000002dc756eebf4f49723ed8d30cc28a5f108eb94b1ba88ac4f9c22"}, SCRIPT_VERIFY_NONE);
+-        consensus.script_flag_exceptions.emplace( // Taproot exception
+-            uint256{"0000000000000000000f14c35b2d841e986ab5441de8c585d5ffe55ea1e395ad"}, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS);
+-        consensus.BIP34Height = 227931;
+-        consensus.BIP34Hash = uint256{"000000000000024b89b42a942fe0d9fea3bb44ab7bd1b19115dd6a759c0808b8"};
+-        consensus.BIP65Height = 388381; // 000000000000000004c2b624ed5d7756c508d90fd0da2c7c679febfa6c4735f0
+-        consensus.BIP66Height = 363725; // 00000000000000000379eaa19dce8c9b722d46ae6a57c2f1a988119488b50931
+-        consensus.CSVHeight = 419328; // 000000000000000004a1b34462cb8aeebd5799177f7a29cf28f2d1961716b5b5
+-        consensus.SegwitHeight = 481824; // 0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893
+-        consensus.MinBIP9WarningHeight = 711648; // taproot activation height + miner confirmation window
++        // Octet: all soft forks are active from the start of the chain, so there are
++        // no Bitcoin block-hash exceptions and no historical activation heights.
++        consensus.BIP34Height = 1;
++        consensus.BIP34Hash = uint256{};
++        consensus.BIP65Height = 1;
++        consensus.BIP66Height = 1;
++        consensus.CSVHeight = 1;
++        consensus.SegwitHeight = 0;
++        consensus.MinBIP9WarningHeight = 0;
+         consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+-        consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
+-        consensus.nPowTargetSpacing = 10 * 60;
++        consensus.nPowTargetTimespan = 2016 * 10; // 2016 blocks; versionbits/reporting period only, not used for retargeting
++        consensus.nPowTargetSpacing = 10;
++        consensus.lwma_window = 90;
+         consensus.fPowAllowMinDifficultyBlocks = false;
+         consensus.enforce_BIP94 = false;
+         consensus.fPowNoRetargeting = false;
+@@ -248,18 +247,19 @@ public:
+         consensus.signet_blocks = false;
+         consensus.signet_challenge.clear();
+         consensus.nSubsidyHalvingInterval = 210000;
+-        consensus.script_flag_exceptions.emplace( // BIP16 exception
+-            uint256{"00000000dd30457c001f4095d208cc1296b0eed002427aa599874af7a432b105"}, SCRIPT_VERIFY_NONE);
+-        consensus.BIP34Height = 21111;
+-        consensus.BIP34Hash = uint256{"0000000023b3a96d3484e5abb3755c413e7d41500f8e2a5c3f0dd01299cd8ef8"};
+-        consensus.BIP65Height = 581885; // 00000000007f6655f22f98e72ed80d8b06dc761d5da09df0fa1dc4be4f861eb6
+-        consensus.BIP66Height = 330776; // 000000002104c8c45e99a8853285a3b592602a3ccde2b832481da85e9e4ba182
+-        consensus.CSVHeight = 770112; // 00000000025e930139bac5c6c31a403776da130831ab85be56578f3fa75369bb
+-        consensus.SegwitHeight = 834624; // 00000000002b980fcd729daaa248fd9316a5200e9b367f4ff2c42453e84201ca
+-        consensus.MinBIP9WarningHeight = 2013984; // taproot activation height + miner confirmation window
++        // Octet: all soft forks are active from the start of the chain, so there are
++        // no Bitcoin block-hash exceptions and no historical activation heights.
++        consensus.BIP34Height = 1;
++        consensus.BIP34Hash = uint256{};
++        consensus.BIP65Height = 1;
++        consensus.BIP66Height = 1;
++        consensus.CSVHeight = 1;
++        consensus.SegwitHeight = 0;
++        consensus.MinBIP9WarningHeight = 0;
+         consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+-        consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
+-        consensus.nPowTargetSpacing = 10 * 60;
++        consensus.nPowTargetTimespan = 2016 * 10; // 2016 blocks; versionbits/reporting period only, not used for retargeting
++        consensus.nPowTargetSpacing = 10;
++        consensus.lwma_window = 90;
+         consensus.fPowAllowMinDifficultyBlocks = true;
+         consensus.enforce_BIP94 = false;
+         consensus.fPowNoRetargeting = false;
+@@ -359,8 +359,9 @@ public:
+         consensus.SegwitHeight = 1;
+         consensus.MinBIP9WarningHeight = 0;
+         consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+-        consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
+-        consensus.nPowTargetSpacing = 10 * 60;
++        consensus.nPowTargetTimespan = 2016 * 10; // 2016 blocks; versionbits/reporting period only, not used for retargeting
++        consensus.nPowTargetSpacing = 10;
++        consensus.lwma_window = 90;
+         consensus.fPowAllowMinDifficultyBlocks = true;
+         consensus.enforce_BIP94 = true;
+         consensus.fPowNoRetargeting = false;
+@@ -503,8 +504,9 @@ public:
+         consensus.BIP66Height = 1;
+         consensus.CSVHeight = 1;
+         consensus.SegwitHeight = 1;
+-        consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
+-        consensus.nPowTargetSpacing = 10 * 60;
++        consensus.nPowTargetTimespan = 2016 * 10; // 2016 blocks; versionbits/reporting period only, not used for retargeting
++        consensus.nPowTargetSpacing = 10;
++        consensus.lwma_window = 90;
+         consensus.fPowAllowMinDifficultyBlocks = false;
+         consensus.enforce_BIP94 = false;
+         consensus.fPowNoRetargeting = false;
+@@ -594,11 +596,12 @@ public:
+         consensus.SegwitHeight = 0; // Always active unless overridden
+         consensus.MinBIP9WarningHeight = 0;
+         consensus.powLimit = uint256{"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+-        consensus.nPowTargetTimespan = 24 * 60 * 60; // one day
+-        consensus.nPowTargetSpacing = 10 * 60;
++        consensus.nPowTargetTimespan = 144 * 10; // 144 blocks; versionbits/reporting period only, not used for retargeting
++        consensus.nPowTargetSpacing = 10;
++        consensus.lwma_window = 60;
+         consensus.fPowAllowMinDifficultyBlocks = true;
+         consensus.enforce_BIP94 = opts.enforce_bip94;
+-        consensus.fPowNoRetargeting = true;
++        consensus.fPowNoRetargeting = !opts.lwma; // regtest keeps min difficulty unless -test=lwma is given
+ 
+         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
+         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nStartTime = 0;
+diff --git a/src/kernel/chainparams.h b/src/kernel/chainparams.h
+index 2c85b8e..ce03cb8 100644
+--- a/src/kernel/chainparams.h
++++ b/src/kernel/chainparams.h
+@@ -157,6 +157,7 @@ public:
+         DeploymentOptions dep_opts{};
+         bool fastprune{false};
+         bool enforce_bip94{false};
++        bool lwma{false};
+     };
+ 
+     struct MainNetOptions {
+diff --git a/src/pow.cpp b/src/pow.cpp
+index 9a9f4e5..7aaec11 100644
+--- a/src/pow.cpp
++++ b/src/pow.cpp
+@@ -11,127 +11,87 @@
+ #include <uint256.h>
+ #include <util/check.h>
+ 
++#include <algorithm>
++#include <vector>
++
+ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
+ {
+     assert(pindexLast != nullptr);
+-    unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
+-
+-    // Only change once per difficulty adjustment interval
+-    if ((pindexLast->nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
+-    {
+-        if (params.fPowAllowMinDifficultyBlocks)
+-        {
+-            // Special difficulty rule for testnet:
+-            // If the new block's timestamp is more than 2* 10 minutes
+-            // then it MUST be a min-difficulty block.
+-            if (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nPowTargetSpacing*2)
+-                return nProofOfWorkLimit;
+-            else
+-            {
+-                // Return the last non-special-min-difficulty-rules-block
+-                const CBlockIndex* pindex = pindexLast;
+-                while (pindex->pprev && pindex->nHeight % params.DifficultyAdjustmentInterval() != 0 && pindex->nBits == nProofOfWorkLimit)
+-                    pindex = pindex->pprev;
+-                return pindex->nBits;
+-            }
+-        }
+-        return pindexLast->nBits;
+-    }
+ 
+-    // Go back by what we want to be 14 days worth of blocks
+-    int nHeightFirst = pindexLast->nHeight - (params.DifficultyAdjustmentInterval()-1);
+-    assert(nHeightFirst >= 0);
+-    const CBlockIndex* pindexFirst = pindexLast->GetAncestor(nHeightFirst);
+-    assert(pindexFirst);
++    if (params.fPowNoRetargeting) return pindexLast->nBits;
+ 
+-    return CalculateNextWorkRequired(pindexLast, pindexFirst->GetBlockTime(), params);
++    return CalculateNextWorkRequiredLWMA(pindexLast, params);
+ }
+ 
+-unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params& params)
++/**
++ * LWMA-1 (linearly weighted moving average, Zawy12) difficulty algorithm.
++ *
++ * For the last N blocks, with solvetime ST_i for block i (i = 1 is the oldest
++ * and N the newest) the next target is
++ *
++ *     avg(target_i) * sum(i * ST_i) / (T * N * (N + 1) / 2)
++ *
++ * so recent blocks count more. Every solvetime is clamped to [1, 6T] after
++ * forcing timestamps to be strictly increasing within the window, which bounds
++ * the influence of a miner who plays with timestamps.
++ */
++unsigned int CalculateNextWorkRequiredLWMA(const CBlockIndex* pindexLast, const Consensus::Params& params)
+ {
+-    if (params.fPowNoRetargeting)
+-        return pindexLast->nBits;
+-
+-    // Limit adjustment step
+-    int64_t nActualTimespan = pindexLast->GetBlockTime() - nFirstBlockTime;
+-    if (nActualTimespan < params.nPowTargetTimespan/4)
+-        nActualTimespan = params.nPowTargetTimespan/4;
+-    if (nActualTimespan > params.nPowTargetTimespan*4)
+-        nActualTimespan = params.nPowTargetTimespan*4;
+-
+-    // Retarget
+-    const arith_uint256 bnPowLimit = UintToArith256(params.powLimit);
+-    arith_uint256 bnNew;
+-
+-    // Special difficulty rule for Testnet4
+-    if (params.enforce_BIP94) {
+-        // Here we use the first block of the difficulty period. This way
+-        // the real difficulty is always preserved in the first block as
+-        // it is not allowed to use the min-difficulty exception.
+-        int nHeightFirst = pindexLast->nHeight - (params.DifficultyAdjustmentInterval()-1);
+-        const CBlockIndex* pindexFirst = pindexLast->GetAncestor(nHeightFirst);
+-        bnNew.SetCompact(pindexFirst->nBits);
+-    } else {
+-        bnNew.SetCompact(pindexLast->nBits);
++    const int64_t T{params.nPowTargetSpacing};
++    const int64_t N{params.lwma_window};
++    const arith_uint256 bnPowLimit{UintToArith256(params.powLimit)};
++
++    // Until a full window exists, stay at the proof-of-work limit.
++    if (pindexLast->nHeight < N) return bnPowLimit.GetCompact();
++
++    // window[0] is only used for its timestamp; window[1..N] are the N blocks averaged.
++    std::vector<const CBlockIndex*> window(N + 1);
++    const CBlockIndex* pindex{pindexLast};
++    for (int64_t i = N; i >= 0; --i) {
++        window[i] = Assert(pindex);
++        pindex = pindex->pprev;
+     }
+ 
+-    bnNew *= nActualTimespan;
+-    bnNew /= params.nPowTargetTimespan;
++    arith_uint256 sum_target;
++    int64_t weighted_solvetimes{0};
++    int64_t previous_timestamp{window[0]->GetBlockTime()};
++    for (int64_t i = 1; i <= N; ++i) {
++        const int64_t timestamp{window[i]->GetBlockTime()};
++        const int64_t this_timestamp{timestamp > previous_timestamp ? timestamp : previous_timestamp + 1};
++        const int64_t solvetime{std::min<int64_t>(6 * T, this_timestamp - previous_timestamp)};
++        previous_timestamp = this_timestamp;
++        weighted_solvetimes += solvetime * i;
++
++        arith_uint256 target;
++        target.SetCompact(window[i]->nBits);
++        sum_target += target / N;
++    }
+ 
+-    if (bnNew > bnPowLimit)
+-        bnNew = bnPowLimit;
++    const int64_t k{N * (N + 1) / 2 * T};
++    const arith_uint256 weight{static_cast<uint64_t>(weighted_solvetimes)};
+ 
+-    return bnNew.GetCompact();
++    arith_uint256 next_target;
++    if (sum_target.bits() + weight.bits() <= 256) {
++        // Multiply first for full precision; cannot overflow.
++        next_target = sum_target * weight / k;
++    } else {
++        // Very easy targets (e.g. regtest): divide first, and saturate at the limit.
++        next_target = sum_target / k;
++        if (next_target > bnPowLimit / weight) return bnPowLimit.GetCompact();
++        next_target *= weight;
++    }
++
++    if (next_target > bnPowLimit) next_target = bnPowLimit;
++    if (next_target == 0) next_target = 1;
++    return next_target.GetCompact();
+ }
+ 
+-// Check that on difficulty adjustments, the new difficulty does not increase
+-// or decrease beyond the permitted limits.
+-bool PermittedDifficultyTransition(const Consensus::Params& params, int64_t height, uint32_t old_nbits, uint32_t new_nbits)
++// With a per-block retarget there is no fixed adjustment boundary at which a
++// bounded change can be checked, and header sync only keeps the previous
++// header, not the LWMA window. Accept any transition here; the exact value is
++// enforced by GetNextWorkRequired() in ContextualCheckBlockHeader().
++bool PermittedDifficultyTransition(const Consensus::Params&, int64_t, uint32_t, uint32_t)
+ {
+-    if (params.fPowAllowMinDifficultyBlocks) return true;
+-
+-    if (height % params.DifficultyAdjustmentInterval() == 0) {
+-        int64_t smallest_timespan = params.nPowTargetTimespan/4;
+-        int64_t largest_timespan = params.nPowTargetTimespan*4;
+-
+-        const arith_uint256 pow_limit = UintToArith256(params.powLimit);
+-        arith_uint256 observed_new_target;
+-        observed_new_target.SetCompact(new_nbits);
+-
+-        // Calculate the largest difficulty value possible:
+-        arith_uint256 largest_difficulty_target;
+-        largest_difficulty_target.SetCompact(old_nbits);
+-        largest_difficulty_target *= largest_timespan;
+-        largest_difficulty_target /= params.nPowTargetTimespan;
+-
+-        if (largest_difficulty_target > pow_limit) {
+-            largest_difficulty_target = pow_limit;
+-        }
+-
+-        // Round and then compare this new calculated value to what is
+-        // observed.
+-        arith_uint256 maximum_new_target;
+-        maximum_new_target.SetCompact(largest_difficulty_target.GetCompact());
+-        if (maximum_new_target < observed_new_target) return false;
+-
+-        // Calculate the smallest difficulty value possible:
+-        arith_uint256 smallest_difficulty_target;
+-        smallest_difficulty_target.SetCompact(old_nbits);
+-        smallest_difficulty_target *= smallest_timespan;
+-        smallest_difficulty_target /= params.nPowTargetTimespan;
+-
+-        if (smallest_difficulty_target > pow_limit) {
+-            smallest_difficulty_target = pow_limit;
+-        }
+-
+-        // Round and then compare this new calculated value to what is
+-        // observed.
+-        arith_uint256 minimum_new_target;
+-        minimum_new_target.SetCompact(smallest_difficulty_target.GetCompact());
+-        if (minimum_new_target > observed_new_target) return false;
+-    } else if (old_nbits != new_nbits) {
+-        return false;
+-    }
+     return true;
+ }
+ 
+diff --git a/src/pow.h b/src/pow.h
+index 26004c4..13cbec1 100644
+--- a/src/pow.h
++++ b/src/pow.h
+@@ -27,23 +27,15 @@ class arith_uint256;
+ std::optional<arith_uint256> DeriveTarget(unsigned int nBits, uint256 pow_limit);
+ 
+ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params&);
+-unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params&);
++unsigned int CalculateNextWorkRequiredLWMA(const CBlockIndex* pindexLast, const Consensus::Params&);
+ 
+ /** Check whether a block hash satisfies the proof-of-work requirement specified by nBits */
+ bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
+ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&);
+ 
+ /**
+- * Return false if the proof-of-work requirement specified by new_nbits at a
+- * given height is not possible, given the proof-of-work on the prior block as
+- * specified by old_nbits.
+- *
+- * This function only checks that the new value is within a factor of 4 of the
+- * old value for blocks at the difficulty adjustment interval, and otherwise
+- * requires the values to be the same.
+- *
+- * Always returns true on networks where min difficulty blocks are allowed,
+- * such as regtest/testnet.
++ * Octet retargets every block (LWMA), so this check no longer bounds the step
++ * size and always returns true. See pow.cpp.
+  */
+ bool PermittedDifficultyTransition(const Consensus::Params& params, int64_t height, uint32_t old_nbits, uint32_t new_nbits);
+ 
+-- 
+2.55.0.windows.4
+

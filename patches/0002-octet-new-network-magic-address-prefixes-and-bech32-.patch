@@ -1,0 +1,234 @@
+From e648e117627d4198f2f13b49fe6ee2615ccadebc Mon Sep 17 00:00:00 2001
+From: Abhishek Kunati <itsmekunati@gmail.com>
+Date: Thu, 5 Nov 2026 20:21:46 +0000
+Subject: [PATCH 2/8] octet: new network magic, address prefixes and bech32
+ HRPs; drop Bitcoin seeds
+
+Magic: main e38fb16d, testnet d5a2913c, testnet4 c7b4e91a, regtest f1d68b4e.
+Base58: main P2PKH/P2SH/WIF 115/117/247 (o.../p...), all test networks 68/70/207.
+Bech32 HRP: oct (main), toct (testnet/testnet4/signet), octrt (regtest).
+BIP32 extended-key version bytes are intentionally unchanged (see
+docs/consensus-changes.md). Removes Bitcoin DNS seeds, fixed seeds,
+nMinimumChainWork and defaultAssumeValid. Signet magic is still derived from the
+default (Bitcoin) challenge; main/testnet/testnet4/signet genesis blocks are
+still Bitcoin's and are not usable Octet networks yet.
+---
+ src/kernel/chainparams.cpp | 111 +++++++++++++++----------------------
+ 1 file changed, 46 insertions(+), 65 deletions(-)
+
+diff --git a/src/kernel/chainparams.cpp b/src/kernel/chainparams.cpp
+index c1274f0..95c3ee3 100644
+--- a/src/kernel/chainparams.cpp
++++ b/src/kernel/chainparams.cpp
+@@ -138,18 +138,18 @@ public:
+ 
+         ApplyDeploymentOptions(opts.dep_opts);
+ 
+-        consensus.nMinimumChainWork = uint256{"000000000000000000000000000000000000000145ec036acc5ba740052af1a0"};
+-        consensus.defaultAssumeValid = uint256{"00000000000000000000748969ec33043c0e52a763c6dd5193861f559f2c72e3"}; // 966143
++        consensus.nMinimumChainWork = uint256{}; // Octet: no prior chain work
++        consensus.defaultAssumeValid = uint256{}; // Octet: no assumed-valid block
+ 
+         /**
+          * The message start string is designed to be unlikely to occur in normal data.
+          * The characters are rarely used upper ASCII, not valid as UTF-8, and produce
+          * a large 32-bit integer with any alignment.
+          */
+-        pchMessageStart[0] = 0xf9;
+-        pchMessageStart[1] = 0xbe;
+-        pchMessageStart[2] = 0xb4;
+-        pchMessageStart[3] = 0xd9;
++        pchMessageStart[0] = 0xe3;
++        pchMessageStart[1] = 0x8f;
++        pchMessageStart[2] = 0xb1;
++        pchMessageStart[3] = 0x6d;
+         nDefaultPort = 25333;
+         nPruneAfterHeight = 100000;
+         m_assumed_blockchain_size = 897;
+@@ -165,23 +165,15 @@ public:
+         // This is fine at runtime as we'll fall back to using them as an addrfetch if they don't support the
+         // service bits we want, but we should get them updated to support all service bits wanted by any
+         // release ASAP to avoid it where possible.
+-        vSeeds.emplace_back("dnsseed.bluematt.me."); // Matt Corallo, only supports x9
+-        vSeeds.emplace_back("seed.bitcoin.jonasschnelli.ch."); // Jonas Schnelli, only supports x1, x5, x9, and xd
+-        vSeeds.emplace_back("seed.btc.petertodd.net."); // Peter Todd, only supports x1, x5, x9, and xd
+-        vSeeds.emplace_back("seed.bitcoin.sprovoost.nl."); // Sjors Provoost
+-        vSeeds.emplace_back("dnsseed.emzy.de."); // Stephan Oeste
+-        vSeeds.emplace_back("seed.bitcoin.wiz.biz."); // Jason Maurice
+-        vSeeds.emplace_back("seed.mainnet.achownodes.xyz."); // Ava Chow, only supports x1, x5, x9, x49, x809, x849, xd, x400, x404, x408, x448, xc08, xc48, x40c
+-
+-        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,0);
+-        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,5);
+-        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,128);
++
++        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,115);
++        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,117);
++        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,247);
+         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x88, 0xB2, 0x1E};
+         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x88, 0xAD, 0xE4};
+ 
+-        bech32_hrp = "bc";
++        bech32_hrp = "oct";
+ 
+-        vFixedSeeds = std::vector<uint8_t>(std::begin(chainparams_seed_main), std::end(chainparams_seed_main));
+ 
+         fDefaultConsistencyChecks = false;
+         m_is_mockable_chain = false;
+@@ -268,13 +260,13 @@ public:
+ 
+         ApplyDeploymentOptions(opts.dep_opts);
+ 
+-        consensus.nMinimumChainWork = uint256{"0000000000000000000000000000000000000000000017f49f702147f10c0eb6"};
+-        consensus.defaultAssumeValid = uint256{"00000000b318a3703d14a844c55ef507f4c2fc8f8766e24271fd43c180c51637"}; // 5128859
++        consensus.nMinimumChainWork = uint256{}; // Octet: no prior chain work
++        consensus.defaultAssumeValid = uint256{}; // Octet: no assumed-valid block
+ 
+-        pchMessageStart[0] = 0x0b;
+-        pchMessageStart[1] = 0x11;
+-        pchMessageStart[2] = 0x09;
+-        pchMessageStart[3] = 0x07;
++        pchMessageStart[0] = 0xd5;
++        pchMessageStart[1] = 0xa2;
++        pchMessageStart[2] = 0x91;
++        pchMessageStart[3] = 0x3c;
+         nDefaultPort = 25433;
+         nPruneAfterHeight = 1000;
+         m_assumed_blockchain_size = 245;
+@@ -288,20 +280,15 @@ public:
+         vFixedSeeds.clear();
+         vSeeds.clear();
+         // nodes with support for servicebits filtering should be at the top
+-        vSeeds.emplace_back("testnet-seed.bitcoin.jonasschnelli.ch.");
+-        vSeeds.emplace_back("seed.tbtc.petertodd.net.");
+-        vSeeds.emplace_back("testnet-seed.bluematt.me."); // Just a static list of stable node(s), only supports x9
+-        vSeeds.emplace_back("seed.testnet.achownodes.xyz."); // Ava Chow, only supports x1, x5, x9, x49, x809, x849, xd, x400, x404, x408, x448, xc08, xc48, x40c
+-
+-        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,111);
+-        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,196);
+-        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
++
++        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,68);
++        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,70);
++        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,207);
+         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
+         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
+ 
+-        bech32_hrp = "tb";
++        bech32_hrp = "toct";
+ 
+-        vFixedSeeds = std::vector<uint8_t>(std::begin(chainparams_seed_test), std::end(chainparams_seed_test));
+ 
+         fDefaultConsistencyChecks = false;
+         m_is_mockable_chain = false;
+@@ -375,13 +362,13 @@ public:
+ 
+         ApplyDeploymentOptions(opts.dep_opts);
+ 
+-        consensus.nMinimumChainWork = uint256{"000000000000000000000000000000000000000000000e346a558455ade8eca9"};
+-        consensus.defaultAssumeValid = uint256{"0000000021df65b91665a342e26ceb05e54826ad7d8fcd40316230058fa3b865"}; // 151604
++        consensus.nMinimumChainWork = uint256{}; // Octet: no prior chain work
++        consensus.defaultAssumeValid = uint256{}; // Octet: no assumed-valid block
+ 
+-        pchMessageStart[0] = 0x1c;
+-        pchMessageStart[1] = 0x16;
+-        pchMessageStart[2] = 0x3f;
+-        pchMessageStart[3] = 0x28;
++        pchMessageStart[0] = 0xc7;
++        pchMessageStart[1] = 0xb4;
++        pchMessageStart[2] = 0xe9;
++        pchMessageStart[3] = 0x1a;
+         nDefaultPort = 25533;
+         nPruneAfterHeight = 1000;
+         m_assumed_blockchain_size = 31;
+@@ -403,18 +390,15 @@ public:
+         vFixedSeeds.clear();
+         vSeeds.clear();
+         // nodes with support for servicebits filtering should be at the top
+-        vSeeds.emplace_back("seed.testnet4.bitcoin.sprovoost.nl."); // Sjors Provoost
+-        vSeeds.emplace_back("seed.testnet4.wiz.biz."); // Jason Maurice
+ 
+-        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,111);
+-        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,196);
+-        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
++        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,68);
++        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,70);
++        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,207);
+         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
+         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
+ 
+-        bech32_hrp = "tb";
++        bech32_hrp = "toct";
+ 
+-        vFixedSeeds = std::vector<uint8_t>(std::begin(chainparams_seed_testnet4), std::end(chainparams_seed_testnet4));
+ 
+         fDefaultConsistencyChecks = false;
+         m_is_mockable_chain = false;
+@@ -468,12 +452,9 @@ public:
+ 
+         if (!options.challenge) {
+             bin = "512103ad5e0edad18cb1f0fc0d28a3d4f1f3e445640337489abb10404f2d1e086be430210359ef5021964fe22d6f8e05b2463c9540ce96883fe3b278760f048f5189f2e6c452ae"_hex_v_u8;
+-            vFixedSeeds = std::vector<uint8_t>(std::begin(chainparams_seed_signet), std::end(chainparams_seed_signet));
+-            vSeeds.emplace_back("seed.signet.bitcoin.sprovoost.nl.");
+-            vSeeds.emplace_back("seed.signet.achownodes.xyz."); // Ava Chow, only supports x1, x5, x9, x49, x809, x849, xd, x400, x404, x408, x448, xc08, xc48, x40c
+ 
+-            consensus.nMinimumChainWork = uint256{"00000000000000000000000000000000000000000000000000001090e9dc1520"};
+-            consensus.defaultAssumeValid = uint256{"00000002a5e0ba0498f1e9f4591af0b66b63c654665efe65206fd0ae7bbaf923"}; // 321295
++            consensus.nMinimumChainWork = uint256{}; // Octet: no prior chain work
++            consensus.defaultAssumeValid = uint256{}; // Octet: no assumed-valid block
+             m_assumed_blockchain_size = 25;
+             m_assumed_chain_state_size = 5;
+             chainTxData = ChainTxData{
+@@ -561,13 +542,13 @@ public:
+             }
+         };
+ 
+-        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,111);
+-        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,196);
+-        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
++        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,68);
++        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,70);
++        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,207);
+         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
+         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
+ 
+-        bech32_hrp = "tb";
++        bech32_hrp = "toct";
+ 
+         fDefaultConsistencyChecks = false;
+         m_is_mockable_chain = false;
+@@ -617,10 +598,10 @@ public:
+         consensus.nMinimumChainWork = uint256{};
+         consensus.defaultAssumeValid = uint256{};
+ 
+-        pchMessageStart[0] = 0xfa;
+-        pchMessageStart[1] = 0xbf;
+-        pchMessageStart[2] = 0xb5;
+-        pchMessageStart[3] = 0xda;
++        pchMessageStart[0] = 0xf1;
++        pchMessageStart[1] = 0xd6;
++        pchMessageStart[2] = 0x8b;
++        pchMessageStart[3] = 0x4e;
+         nDefaultPort = 25744;
+         nPruneAfterHeight = opts.fastprune ? 100 : 1000;
+         m_assumed_blockchain_size = 0;
+@@ -669,13 +650,13 @@ public:
+             .dTxRate = 0.001, // Set a non-zero rate to make it testable
+         };
+ 
+-        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,111);
+-        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,196);
+-        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,239);
++        base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,68);
++        base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,70);
++        base58Prefixes[SECRET_KEY] =     std::vector<unsigned char>(1,207);
+         base58Prefixes[EXT_PUBLIC_KEY] = {0x04, 0x35, 0x87, 0xCF};
+         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x35, 0x83, 0x94};
+ 
+-        bech32_hrp = "bcrt";
++        bech32_hrp = "octrt";
+ 
+         // Copied from Testnet4.
+         m_headers_sync_params = HeadersSyncParams{
+-- 
+2.55.0.windows.4
+

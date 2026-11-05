@@ -1,0 +1,271 @@
+From b5dc09969c651ec29a99184d9849b6405c9a76f9 Mon Sep 17 00:00:00 2001
+From: Abhishek Kunati <itsmekunati@gmail.com>
+Date: Thu, 5 Nov 2026 20:25:07 +0000
+Subject: [PATCH 5/8] octet: replace retarget unit tests with LWMA tests; drop
+ removed function from pow fuzz target
+
+The pow fuzz target is not built by default and has NOT been compiled or run
+after this change.
+---
+ src/pow.cpp            |  18 +++--
+ src/test/fuzz/pow.cpp  |   1 -
+ src/test/pow_tests.cpp | 171 ++++++++++++++++++++++++++---------------
+ 3 files changed, 120 insertions(+), 70 deletions(-)
+
+diff --git a/src/pow.cpp b/src/pow.cpp
+index 7aaec11..254d47d 100644
+--- a/src/pow.cpp
++++ b/src/pow.cpp
+@@ -52,6 +52,13 @@ unsigned int CalculateNextWorkRequiredLWMA(const CBlockIndex* pindexLast, const
+         pindex = pindex->pprev;
+     }
+ 
++    // Each solvetime is at most 6T, so the weighted sum is at most 6 * k.
++    const int64_t k{N * (N + 1) / 2 * T};
++    // If powLimit is far enough below 2^256 we can sum the targets undivided and
++    // keep full precision (a constant-difficulty chain then yields exactly the
++    // same nBits). Otherwise (regtest) average first and saturate at powLimit.
++    const bool full_precision{bnPowLimit.bits() + arith_uint256{static_cast<uint64_t>(N)}.bits() + arith_uint256{static_cast<uint64_t>(6 * k)}.bits() <= 256};
++
+     arith_uint256 sum_target;
+     int64_t weighted_solvetimes{0};
+     int64_t previous_timestamp{window[0]->GetBlockTime()};
+@@ -64,19 +71,16 @@ unsigned int CalculateNextWorkRequiredLWMA(const CBlockIndex* pindexLast, const
+ 
+         arith_uint256 target;
+         target.SetCompact(window[i]->nBits);
+-        sum_target += target / N;
++        sum_target += full_precision ? target : target / static_cast<uint64_t>(N);
+     }
+ 
+-    const int64_t k{N * (N + 1) / 2 * T};
+     const arith_uint256 weight{static_cast<uint64_t>(weighted_solvetimes)};
+ 
+     arith_uint256 next_target;
+-    if (sum_target.bits() + weight.bits() <= 256) {
+-        // Multiply first for full precision; cannot overflow.
+-        next_target = sum_target * weight / k;
++    if (full_precision) {
++        next_target = sum_target * weight / (arith_uint256{static_cast<uint64_t>(k)} * static_cast<uint64_t>(N));
+     } else {
+-        // Very easy targets (e.g. regtest): divide first, and saturate at the limit.
+-        next_target = sum_target / k;
++        next_target = sum_target / static_cast<uint64_t>(k);
+         if (next_target > bnPowLimit / weight) return bnPowLimit.GetCompact();
+         next_target *= weight;
+     }
+diff --git a/src/test/fuzz/pow.cpp b/src/test/fuzz/pow.cpp
+index b60de39..1bb1d38 100644
+--- a/src/test/fuzz/pow.cpp
++++ b/src/test/fuzz/pow.cpp
+@@ -63,7 +63,6 @@ FUZZ_TARGET(pow, .init = initialize_pow)
+         }
+         {
+             (void)GetBlockProof(current_block);
+-            (void)CalculateNextWorkRequired(&current_block, fuzzed_data_provider.ConsumeIntegralInRange<int64_t>(0, std::numeric_limits<int64_t>::max()), consensus_params);
+             if (current_block.nHeight != std::numeric_limits<int>::max() && current_block.nHeight - (consensus_params.DifficultyAdjustmentInterval() - 1) >= 0) {
+                 (void)GetNextWorkRequired(&current_block, &(*block_header), consensus_params);
+             }
+diff --git a/src/test/pow_tests.cpp b/src/test/pow_tests.cpp
+index e75d1e3..897481a 100644
+--- a/src/test/pow_tests.cpp
++++ b/src/test/pow_tests.cpp
+@@ -12,73 +12,123 @@
+ 
+ #include <boost/test/unit_test.hpp>
+ 
++#include <functional>
++#include <vector>
++
+ BOOST_FIXTURE_TEST_SUITE(pow_tests, BasicTestingSetup)
+ 
+-/* Test calculation of next difficulty target with no constraints applying */
+-BOOST_AUTO_TEST_CASE(get_next_work)
++namespace {
++/** Build a chain of n blocks, all with nBits, where solvetime(i) is the gap between block i-1 and i. */
++std::vector<CBlockIndex> MakeChain(size_t n, uint32_t nbits, const std::function<int64_t(size_t)>& solvetime)
+ {
+-    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+-    int64_t nLastRetargetTime = 1261130161; // Block #30240
+-    CBlockIndex pindexLast;
+-    pindexLast.nHeight = 32255;
+-    pindexLast.nTime = 1262152739;  // Block #32255
+-    pindexLast.nBits = 0x1d00ffff;
++    std::vector<CBlockIndex> blocks(n);
++    int64_t t{1'800'000'000};
++    for (size_t i = 0; i < n; ++i) {
++        if (i > 0) t += solvetime(i);
++        blocks[i].pprev = i ? &blocks[i - 1] : nullptr;
++        blocks[i].nHeight = i;
++        blocks[i].nTime = t;
++        blocks[i].nBits = nbits;
++    }
++    return blocks;
++}
+ 
+-    // Here (and below): expected_nbits is calculated in
+-    // CalculateNextWorkRequired(); redoing the calculation here would be just
+-    // reimplementing the same code that is written in pow.cpp. Rather than
+-    // copy that code, we just hardcode the expected result.
+-    unsigned int expected_nbits = 0x1d00d86aU;
+-    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus()), expected_nbits);
+-    BOOST_CHECK(PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, expected_nbits));
++/** new target / old target */
++double TargetRatio(uint32_t new_nbits, uint32_t old_nbits)
++{
++    arith_uint256 n, o;
++    n.SetCompact(new_nbits);
++    o.SetCompact(old_nbits);
++    return n.getdouble() / o.getdouble();
+ }
++} // namespace
+ 
+-/* Test the constraint on the upper bound for next work */
+-BOOST_AUTO_TEST_CASE(get_next_work_pow_limit)
++BOOST_AUTO_TEST_CASE(lwma_params)
+ {
+-    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+-    int64_t nLastRetargetTime = 1231006505; // Block #0
+-    CBlockIndex pindexLast;
+-    pindexLast.nHeight = 2015;
+-    pindexLast.nTime = 1233061996;  // Block #2015
+-    pindexLast.nBits = 0x1d00ffff;
+-    unsigned int expected_nbits = 0x1d00ffffU;
+-    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus()), expected_nbits);
+-    BOOST_CHECK(PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, expected_nbits));
++    const auto consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
++    BOOST_CHECK_EQUAL(consensus.nPowTargetSpacing, 10);
++    BOOST_CHECK_EQUAL(consensus.lwma_window, 90);
+ }
+ 
+-/* Test the constraint on the lower bound for actual time taken */
+-BOOST_AUTO_TEST_CASE(get_next_work_lower_limit_actual)
++BOOST_AUTO_TEST_CASE(lwma_before_full_window)
+ {
+-    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+-    int64_t nLastRetargetTime = 1279008237; // Block #66528
+-    CBlockIndex pindexLast;
+-    pindexLast.nHeight = 68543;
+-    pindexLast.nTime = 1279297671;  // Block #68543
+-    pindexLast.nBits = 0x1c05a3f4;
+-    unsigned int expected_nbits = 0x1c0168fdU;
+-    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus()), expected_nbits);
+-    BOOST_CHECK(PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, expected_nbits));
+-    // Test that reducing nbits further would not be a PermittedDifficultyTransition.
+-    unsigned int invalid_nbits = expected_nbits-1;
+-    BOOST_CHECK(!PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, invalid_nbits));
+-}
+-
+-/* Test the constraint on the upper bound for actual time taken */
+-BOOST_AUTO_TEST_CASE(get_next_work_upper_limit_actual)
++    const auto consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
++    const unsigned int limit{UintToArith256(consensus.powLimit).GetCompact()};
++    auto chain = MakeChain(consensus.lwma_window, 0x1c05a3f4, [](size_t) { return 10; });
++    // Tip height is window-1: not enough history yet
++    BOOST_CHECK_EQUAL(GetNextWorkRequired(&chain.back(), nullptr, consensus), limit);
++}
++
++BOOST_AUTO_TEST_CASE(lwma_steady_state_is_unchanged)
+ {
+-    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+-    int64_t nLastRetargetTime = 1263163443; // NOTE: Not an actual block time
+-    CBlockIndex pindexLast;
+-    pindexLast.nHeight = 46367;
+-    pindexLast.nTime = 1269211443;  // Block #46367
+-    pindexLast.nBits = 0x1c387f6f;
+-    unsigned int expected_nbits = 0x1d00e1fdU;
+-    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus()), expected_nbits);
+-    BOOST_CHECK(PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, expected_nbits));
+-    // Test that increasing nbits further would not be a PermittedDifficultyTransition.
+-    unsigned int invalid_nbits = expected_nbits+1;
+-    BOOST_CHECK(!PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, invalid_nbits));
++    const auto consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
++    auto chain = MakeChain(consensus.lwma_window + 1, 0x1c05a3f4, [](size_t) { return 10; });
++    BOOST_CHECK_EQUAL(GetNextWorkRequired(&chain.back(), nullptr, consensus), 0x1c05a3f4U);
++}
++
++BOOST_AUTO_TEST_CASE(lwma_responds_to_hashrate_changes)
++{
++    const auto consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
++    const uint32_t nbits{0x1c05a3f4};
++    // Blocks twice as fast as target: target (and thus work per block inverse) halves.
++    auto fast = MakeChain(consensus.lwma_window + 1, nbits, [](size_t) { return 5; });
++    BOOST_CHECK_CLOSE(TargetRatio(GetNextWorkRequired(&fast.back(), nullptr, consensus), nbits), 0.5, 0.01);
++    // Blocks twice as slow: target doubles.
++    auto slow = MakeChain(consensus.lwma_window + 1, nbits, [](size_t) { return 20; });
++    BOOST_CHECK_CLOSE(TargetRatio(GetNextWorkRequired(&slow.back(), nullptr, consensus), nbits), 2.0, 0.01);
++}
++
++BOOST_AUTO_TEST_CASE(lwma_clamps_solvetimes)
++{
++    const auto consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
++    const uint32_t nbits{0x1c05a3f4};
++    // Huge gaps are clamped at 6T, so the target rises by at most a factor 6 per step.
++    auto stalled = MakeChain(consensus.lwma_window + 1, nbits, [](size_t) { return 100'000; });
++    BOOST_CHECK_CLOSE(TargetRatio(GetNextWorkRequired(&stalled.back(), nullptr, consensus), nbits), 6.0, 0.01);
++    // Identical timestamps count as 1 second each (strictly increasing), so factor 1/T.
++    auto same_time = MakeChain(consensus.lwma_window + 1, nbits, [](size_t) { return 0; });
++    BOOST_CHECK_CLOSE(TargetRatio(GetNextWorkRequired(&same_time.back(), nullptr, consensus), nbits), 0.1, 0.01);
++}
++
++BOOST_AUTO_TEST_CASE(lwma_weights_recent_blocks_more)
++{
++    const auto consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
++    const uint32_t nbits{0x1c05a3f4};
++    const size_t n{static_cast<size_t>(consensus.lwma_window + 1)};
++    // Same set of solvetimes, in opposite order. Recent slowness must matter more.
++    auto fast_then_slow = MakeChain(n, nbits, [&](size_t i) { return i <= n / 2 ? 5 : 15; });
++    auto slow_then_fast = MakeChain(n, nbits, [&](size_t i) { return i <= n / 2 ? 15 : 5; });
++    BOOST_CHECK(GetNextWorkRequired(&fast_then_slow.back(), nullptr, consensus) > GetNextWorkRequired(&slow_then_fast.back(), nullptr, consensus));
++}
++
++BOOST_AUTO_TEST_CASE(lwma_never_exceeds_pow_limit)
++{
++    const auto consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
++    const unsigned int limit{UintToArith256(consensus.powLimit).GetCompact()};
++    auto slow = MakeChain(consensus.lwma_window + 1, limit, [](size_t) { return 100; });
++    BOOST_CHECK_EQUAL(GetNextWorkRequired(&slow.back(), nullptr, consensus), limit);
++}
++
++BOOST_AUTO_TEST_CASE(lwma_regtest)
++{
++    // Default regtest: no retargeting, nBits is carried forward.
++    const auto fixed = CreateChainParams(*m_node.args, ChainType::REGTEST);
++    auto chain = MakeChain(fixed->GetConsensus().lwma_window + 1, 0x207fffff, [](size_t) { return 1; });
++    BOOST_CHECK_EQUAL(GetNextWorkRequired(&chain.back(), nullptr, fixed->GetConsensus()), 0x207fffffU);
++
++    // -test=lwma: powLimit is ~2^255, exercising the overflow-safe path.
++    CChainParams::RegTestOptions opts;
++    opts.lwma = true;
++    const auto lwma = CChainParams::RegTest(opts);
++    const auto& consensus = lwma->GetConsensus();
++    BOOST_CHECK(!consensus.fPowNoRetargeting);
++    const unsigned int limit{UintToArith256(consensus.powLimit).GetCompact()};
++    // Slow blocks at the limit stay at the limit rather than overflowing.
++    auto slow = MakeChain(consensus.lwma_window + 1, limit, [](size_t) { return 60; });
++    BOOST_CHECK_EQUAL(GetNextWorkRequired(&slow.back(), nullptr, consensus), limit);
++    // Fast blocks at the limit make the target harder (smaller).
++    auto fast = MakeChain(consensus.lwma_window + 1, limit, [](size_t) { return 1; });
++    BOOST_CHECK_CLOSE(TargetRatio(GetNextWorkRequired(&fast.back(), nullptr, consensus), limit), 0.1, 1.0);
+ }
+ 
+ BOOST_AUTO_TEST_CASE(CheckProofOfWork_test_negative_target)
+@@ -177,12 +227,9 @@ void sanity_check_chainparams(const ArgsManager& args, ChainType chain_type)
+     BOOST_CHECK(!over);
+     BOOST_CHECK(UintToArith256(consensus.powLimit) >= pow_compact);
+ 
+-    // check max target * 4*nPowTargetTimespan doesn't overflow -- see pow.cpp:CalculateNextWorkRequired()
+-    if (!consensus.fPowNoRetargeting) {
+-        arith_uint256 targ_max{UintToArith256(uint256{"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"})};
+-        targ_max /= consensus.nPowTargetTimespan*4;
+-        BOOST_CHECK(UintToArith256(consensus.powLimit) < targ_max);
+-    }
++    // LWMA needs a window of at least two blocks, and the window must fit in 64-bit weights
++    BOOST_CHECK_GE(consensus.lwma_window, 2);
++    BOOST_CHECK_LE(consensus.lwma_window, 10000);
+ }
+ 
+ BOOST_AUTO_TEST_CASE(ChainParams_MAIN_sanity)
+-- 
+2.55.0.windows.4
+

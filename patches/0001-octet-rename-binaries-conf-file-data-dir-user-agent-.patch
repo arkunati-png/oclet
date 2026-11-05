@@ -1,0 +1,244 @@
+From dd6a10d43a2ab95cda61bc2ecee9d6e32c4183dd Mon Sep 17 00:00:00 2001
+From: Abhishek Kunati <itsmekunati@gmail.com>
+Date: Thu, 5 Nov 2026 20:20:34 +0000
+Subject: [PATCH 1/8] octet: rename binaries, conf file, data dir, user agent
+ and default ports
+
+Binaries are renamed via OUTPUT_NAME only (octetd, octet-cli, octet-qt); CMake
+target names are unchanged so the functional test framework keeps working.
+Default ports: p2p/rpc main 25333/25332, testnet 25433/25432, testnet4
+25533/25532, signet 25633/25632, regtest 25744/25743. All below the Linux
+ephemeral range (32768+).
+---
+ CMakeLists.txt             |  2 +-
+ src/CMakeLists.txt         |  2 ++
+ src/bitcoin-cli.cpp        |  2 +-
+ src/chainparamsbase.cpp    | 10 +++++-----
+ src/clientversion.cpp      |  2 +-
+ src/common/args.cpp        | 18 +++++++++---------
+ src/kernel/chainparams.cpp | 10 +++++-----
+ src/qt/CMakeLists.txt      |  1 +
+ src/rpc/util.cpp           |  4 ++--
+ 9 files changed, 27 insertions(+), 24 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 350e611..cb3ffe2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -26,7 +26,7 @@ get_directory_property(precious_variables CACHE_VARIABLES)
+ #=============================
+ # Project / Package metadata
+ #=============================
+-set(CLIENT_NAME "Bitcoin Core")
++set(CLIENT_NAME "Octet")
+ set(CLIENT_VERSION_MAJOR 32)
+ set(CLIENT_VERSION_MINOR 1)
+ set(CLIENT_VERSION_BUILD 0)
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 15b60ef..d2fe3df 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -320,6 +320,7 @@ if(BUILD_DAEMON)
+     bitcoind-res.rc
+     init/bitcoind.cpp
+   )
++  set_target_properties(bitcoind PROPERTIES OUTPUT_NAME octetd)
+   add_windows_application_manifest(bitcoind)
+   target_link_libraries(bitcoind
+     core_interface
+@@ -361,6 +362,7 @@ if(BUILD_CLI)
+     bitcoin-cli-res.rc
+     init/basic.cpp
+   )
++  set_target_properties(bitcoin-cli PROPERTIES OUTPUT_NAME octet-cli)
+   add_windows_application_manifest(bitcoin-cli)
+   target_link_libraries(bitcoin-cli
+     core_interface
+diff --git a/src/bitcoin-cli.cpp b/src/bitcoin-cli.cpp
+index c4510e3..73db190 100644
+--- a/src/bitcoin-cli.cpp
++++ b/src/bitcoin-cli.cpp
+@@ -173,7 +173,7 @@ static void SetupCliArgs(ArgsManager& argsman)
+     argsman.AddArg("-rpcuser=<user>", "Username for JSON-RPC connections", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+     argsman.AddArg("-rpcwait", "Wait for RPC server to start", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+     argsman.AddArg("-rpcwaittimeout=<n>", strprintf("Timeout in seconds to wait for the RPC server to start, or 0 for no timeout. (default: %d)", DEFAULT_WAIT_CLIENT_TIMEOUT), ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
+-    argsman.AddArg("-rpcwallet=<walletname>", "Send RPC for non-default wallet on RPC server (needs to exactly match corresponding -wallet option passed to bitcoind). This changes the RPC endpoint used, e.g. http://127.0.0.1:8332/wallet/<walletname>", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
++    argsman.AddArg("-rpcwallet=<walletname>", "Send RPC for non-default wallet on RPC server (needs to exactly match corresponding -wallet option passed to bitcoind). This changes the RPC endpoint used, e.g. http://127.0.0.1:25332/wallet/<walletname>", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+     argsman.AddArg("-stdin", "Read extra arguments from standard input, one per line until EOF/Ctrl-D (recommended for sensitive information such as passphrases). When combined with -stdinrpcpass, the first line from standard input is used for the RPC password.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+     argsman.AddArg("-stdinrpcpass", "Read RPC password from standard input as a single line. When combined with -stdin, the first line from standard input is used for the RPC password. When combined with -stdinwalletpassphrase, -stdinrpcpass consumes the first line, and -stdinwalletpassphrase consumes the second.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+     argsman.AddArg("-stdinwalletpassphrase", "Read wallet passphrase from standard input as a single line. When combined with -stdin, the first line from standard input is used for the wallet passphrase.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+diff --git a/src/chainparamsbase.cpp b/src/chainparamsbase.cpp
+index f62e455..3146bf1 100644
+--- a/src/chainparamsbase.cpp
++++ b/src/chainparamsbase.cpp
+@@ -41,15 +41,15 @@ std::unique_ptr<CBaseChainParams> CreateBaseChainParams(const ChainType chain)
+ {
+     switch (chain) {
+     case ChainType::MAIN:
+-        return std::make_unique<CBaseChainParams>("", 8332);
++        return std::make_unique<CBaseChainParams>("", 25332);
+     case ChainType::TESTNET:
+-        return std::make_unique<CBaseChainParams>("testnet3", 18332);
++        return std::make_unique<CBaseChainParams>("testnet3", 25432);
+     case ChainType::TESTNET4:
+-        return std::make_unique<CBaseChainParams>("testnet4", 48332);
++        return std::make_unique<CBaseChainParams>("testnet4", 25532);
+     case ChainType::SIGNET:
+-        return std::make_unique<CBaseChainParams>("signet", 38332);
++        return std::make_unique<CBaseChainParams>("signet", 25632);
+     case ChainType::REGTEST:
+-        return std::make_unique<CBaseChainParams>("regtest", 18443);
++        return std::make_unique<CBaseChainParams>("regtest", 25743);
+     }
+     assert(false);
+ }
+diff --git a/src/clientversion.cpp b/src/clientversion.cpp
+index 9683816..c76d1de 100644
+--- a/src/clientversion.cpp
++++ b/src/clientversion.cpp
+@@ -19,7 +19,7 @@ using util::Join;
+  * for both bitcoind and bitcoin-qt, to make it harder for attackers to
+  * target servers or GUI users specifically.
+  */
+-const std::string UA_NAME("Satoshi");
++const std::string UA_NAME("Octet");
+ 
+ 
+ #include <bitcoin-build-info.h> // IWYU pragma: keep
+diff --git a/src/common/args.cpp b/src/common/args.cpp
+index 97b37eb..de6b4fe 100644
+--- a/src/common/args.cpp
++++ b/src/common/args.cpp
+@@ -32,7 +32,7 @@
+ #include <utility>
+ #include <variant>
+ 
+-const char * const BITCOIN_CONF_FILENAME = "bitcoin.conf";
++const char * const BITCOIN_CONF_FILENAME = "octet.conf";
+ const char * const BITCOIN_SETTINGS_FILENAME = "settings.json";
+ 
+ ArgsManager gArgs;
+@@ -859,18 +859,18 @@ bool HasTestOption(const ArgsManager& args, const std::string& test_option)
+ fs::path GetDefaultDataDir()
+ {
+     // Windows:
+-    //   old: C:\Users\Username\AppData\Roaming\Bitcoin
+-    //   new: C:\Users\Username\AppData\Local\Bitcoin
+-    // macOS: ~/Library/Application Support/Bitcoin
+-    // Unix-like: ~/.bitcoin
++    //   old: C:\Users\Username\AppData\Roaming\Octet
++    //   new: C:\Users\Username\AppData\Local\Octet
++    // macOS: ~/Library/Application Support/Octet
++    // Unix-like: ~/.octet
+ #ifdef WIN32
+     // Windows
+     // Check for existence of datadir in old location and keep it there
+-    fs::path legacy_path = GetSpecialFolderPath(CSIDL_APPDATA) / "Bitcoin";
++    fs::path legacy_path = GetSpecialFolderPath(CSIDL_APPDATA) / "Octet";
+     if (fs::exists(legacy_path)) return legacy_path;
+ 
+     // Otherwise, fresh installs can start in the new, "proper" location
+-    return GetSpecialFolderPath(CSIDL_LOCAL_APPDATA) / "Bitcoin";
++    return GetSpecialFolderPath(CSIDL_LOCAL_APPDATA) / "Octet";
+ #else
+     fs::path pathRet;
+     char* pszHome = getenv("HOME");
+@@ -880,10 +880,10 @@ fs::path GetDefaultDataDir()
+         pathRet = fs::path(pszHome);
+ #ifdef __APPLE__
+     // macOS
+-    return pathRet / "Library/Application Support/Bitcoin";
++    return pathRet / "Library/Application Support/Octet";
+ #else
+     // Unix-like
+-    return pathRet / ".bitcoin";
++    return pathRet / ".octet";
+ #endif
+ #endif
+ }
+diff --git a/src/kernel/chainparams.cpp b/src/kernel/chainparams.cpp
+index a071833..c1274f0 100644
+--- a/src/kernel/chainparams.cpp
++++ b/src/kernel/chainparams.cpp
+@@ -150,7 +150,7 @@ public:
+         pchMessageStart[1] = 0xbe;
+         pchMessageStart[2] = 0xb4;
+         pchMessageStart[3] = 0xd9;
+-        nDefaultPort = 8333;
++        nDefaultPort = 25333;
+         nPruneAfterHeight = 100000;
+         m_assumed_blockchain_size = 897;
+         m_assumed_chain_state_size = 14;
+@@ -275,7 +275,7 @@ public:
+         pchMessageStart[1] = 0x11;
+         pchMessageStart[2] = 0x09;
+         pchMessageStart[3] = 0x07;
+-        nDefaultPort = 18333;
++        nDefaultPort = 25433;
+         nPruneAfterHeight = 1000;
+         m_assumed_blockchain_size = 245;
+         m_assumed_chain_state_size = 19;
+@@ -382,7 +382,7 @@ public:
+         pchMessageStart[1] = 0x16;
+         pchMessageStart[2] = 0x3f;
+         pchMessageStart[3] = 0x28;
+-        nDefaultPort = 48333;
++        nDefaultPort = 25533;
+         nPruneAfterHeight = 1000;
+         m_assumed_blockchain_size = 31;
+         m_assumed_chain_state_size = 2;
+@@ -532,7 +532,7 @@ public:
+         uint256 hash = h.GetHash();
+         std::copy_n(hash.begin(), 4, pchMessageStart.begin());
+ 
+-        nDefaultPort = 38333;
++        nDefaultPort = 25633;
+         nPruneAfterHeight = 1000;
+ 
+         genesis = CreateGenesisBlock(1598918400, 52613770, 0x1e0377ae, 1, 50 * COIN);
+@@ -621,7 +621,7 @@ public:
+         pchMessageStart[1] = 0xbf;
+         pchMessageStart[2] = 0xb5;
+         pchMessageStart[3] = 0xda;
+-        nDefaultPort = 18444;
++        nDefaultPort = 25744;
+         nPruneAfterHeight = opts.fastprune ? 100 : 1000;
+         m_assumed_blockchain_size = 0;
+         m_assumed_chain_state_size = 0;
+diff --git a/src/qt/CMakeLists.txt b/src/qt/CMakeLists.txt
+index 5ed3ddb..ada237e 100644
+--- a/src/qt/CMakeLists.txt
++++ b/src/qt/CMakeLists.txt
+@@ -261,6 +261,7 @@ add_executable(bitcoin-qt WIN32
+   ../init/bitcoin-qt.cpp
+ )
+ 
++set_target_properties(bitcoin-qt PROPERTIES OUTPUT_NAME octet-qt)
+ add_windows_application_manifest(bitcoin-qt)
+ 
+ target_link_libraries(bitcoin-qt
+diff --git a/src/rpc/util.cpp b/src/rpc/util.cpp
+index 5ebd5dc..feb92a2 100644
+--- a/src/rpc/util.cpp
++++ b/src/rpc/util.cpp
+@@ -206,7 +206,7 @@ std::string HelpExampleCliNamed(const std::string& methodname, const RPCArgList&
+ std::string HelpExampleRpc(const std::string& methodname, const std::string& args)
+ {
+     return "> curl --user myusername --data-binary '{\"jsonrpc\": \"2.0\", \"id\": \"curltest\", "
+-        "\"method\": \"" + methodname + "\", \"params\": [" + args + "]}' -H 'content-type: application/json' http://127.0.0.1:8332/\n";
++        "\"method\": \"" + methodname + "\", \"params\": [" + args + "]}' -H 'content-type: application/json' http://127.0.0.1:25332/\n";
+ }
+ 
+ std::string HelpExampleRpcNamed(const std::string& methodname, const RPCArgList& args)
+@@ -217,7 +217,7 @@ std::string HelpExampleRpcNamed(const std::string& methodname, const RPCArgList&
+     }
+ 
+     return "> curl --user myusername --data-binary '{\"jsonrpc\": \"2.0\", \"id\": \"curltest\", "
+-           "\"method\": \"" + methodname + "\", \"params\": " + params.write() + "}' -H 'content-type: application/json' http://127.0.0.1:8332/\n";
++           "\"method\": \"" + methodname + "\", \"params\": " + params.write() + "}' -H 'content-type: application/json' http://127.0.0.1:25332/\n";
+ }
+ 
+ // Converts a hex string to a public key if possible
+-- 
+2.55.0.windows.4
+

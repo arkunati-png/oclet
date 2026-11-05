@@ -1,0 +1,222 @@
+From d082b8a03cb0e59e9090cef78cce1068a73fe24f Mon Sep 17 00:00:00 2001
+From: Abhishek Kunati <itsmekunati@gmail.com>
+Date: Thu, 5 Nov 2026 20:30:49 +0000
+Subject: [PATCH 6/8] octet: 500M supply schedule (20 OCT initial subsidy,
+ halving every 12.5M blocks)
+
+nInitialSubsidy becomes a consensus parameter (main/test/testnet4/signet: 20
+OCT, regtest: 50 OCT with 150-block halvings so existing tests keep meaning).
+nSubsidyHalvingInterval = 12,500,000 blocks (~3.96 years at 10s) on all
+non-regtest networks. Total issuance is 499,999,998.375 OCT (subsidy rounds down
+at each halving; reaches zero after 31 halvings). MAX_MONEY = 500,000,000 OCT.
+Unit and functional-framework test constants updated; not yet compiled.
+---
+ src/consensus/amount.h                       |  8 ++++----
+ src/consensus/params.h                       |  3 +++
+ src/kernel/chainparams.cpp                   | 13 +++++++++----
+ src/test/compress_tests.cpp                  |  4 ++--
+ src/test/validation_tests.cpp                |  9 +++++----
+ src/validation.cpp                           |  4 ++--
+ test/functional/test_framework/compressor.py |  2 +-
+ test/functional/test_framework/messages.py   |  4 ++--
+ 8 files changed, 28 insertions(+), 19 deletions(-)
+
+diff --git a/src/consensus/amount.h b/src/consensus/amount.h
+index a2a383c..4ce042b 100644
+--- a/src/consensus/amount.h
++++ b/src/consensus/amount.h
+@@ -16,14 +16,14 @@ inline constexpr CAmount COIN{100'000'000};
+ 
+ /** No amount larger than this (in satoshi) is valid.
+  *
+- * Note that this constant is *not* the total money supply, which in Bitcoin
+- * currently happens to be less than 21,000,000 BTC for various reasons, but
+- * rather a sanity check. As this sanity check is used by consensus-critical
++ * Note that this constant is *not* the total money supply, which is slightly
++ * less than 500,000,000 OCT because the subsidy is rounded down at each
++ * halving, but rather a sanity check. As this sanity check is used by consensus-critical
+  * validation code, the exact value of the MAX_MONEY constant is consensus
+  * critical; in unusual circumstances like a(nother) overflow bug that allowed
+  * for the creation of coins out of thin air modification could lead to a fork.
+  * */
+-inline constexpr CAmount MAX_MONEY{21'000'000 * COIN};
++inline constexpr CAmount MAX_MONEY{500'000'000 * COIN};
+ inline bool MoneyRange(const CAmount& nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
+ 
+ #endif // BITCOIN_CONSENSUS_AMOUNT_H
+diff --git a/src/consensus/params.h b/src/consensus/params.h
+index e26585c..6347402 100644
+--- a/src/consensus/params.h
++++ b/src/consensus/params.h
+@@ -6,6 +6,7 @@
+ #ifndef BITCOIN_CONSENSUS_PARAMS_H
+ #define BITCOIN_CONSENSUS_PARAMS_H
+ 
++#include <consensus/amount.h>
+ #include <script/verify_flags.h>
+ #include <uint256.h>
+ 
+@@ -87,6 +88,8 @@ struct BIP9Deployment {
+  */
+ struct Params {
+     uint256 hashGenesisBlock;
++    /** Block subsidy at height 0, in satoshis. Halves every nSubsidyHalvingInterval blocks. */
++    CAmount nInitialSubsidy{50 * COIN};
+     int nSubsidyHalvingInterval;
+     /**
+      * Hashes of blocks that
+diff --git a/src/kernel/chainparams.cpp b/src/kernel/chainparams.cpp
+index eb51fe5..2c952cf 100644
+--- a/src/kernel/chainparams.cpp
++++ b/src/kernel/chainparams.cpp
+@@ -123,7 +123,8 @@ public:
+         m_chain_type = ChainType::MAIN;
+         consensus.signet_blocks = false;
+         consensus.signet_challenge.clear();
+-        consensus.nSubsidyHalvingInterval = 210000;
++        consensus.nInitialSubsidy = 20 * COIN;
++        consensus.nSubsidyHalvingInterval = 12'500'000; // ~3.96 years at 10s blocks; 2 * 20 * 12.5M = 500M OCT
+         // Octet: all soft forks are active from the start of the chain, so there are
+         // no Bitcoin block-hash exceptions and no historical activation heights.
+         consensus.BIP34Height = 1;
+@@ -246,7 +247,8 @@ public:
+         m_chain_type = ChainType::TESTNET;
+         consensus.signet_blocks = false;
+         consensus.signet_challenge.clear();
+-        consensus.nSubsidyHalvingInterval = 210000;
++        consensus.nInitialSubsidy = 20 * COIN;
++        consensus.nSubsidyHalvingInterval = 12'500'000; // ~3.96 years at 10s blocks; 2 * 20 * 12.5M = 500M OCT
+         // Octet: all soft forks are active from the start of the chain, so there are
+         // no Bitcoin block-hash exceptions and no historical activation heights.
+         consensus.BIP34Height = 1;
+@@ -350,7 +352,8 @@ public:
+         m_chain_type = ChainType::TESTNET4;
+         consensus.signet_blocks = false;
+         consensus.signet_challenge.clear();
+-        consensus.nSubsidyHalvingInterval = 210000;
++        consensus.nInitialSubsidy = 20 * COIN;
++        consensus.nSubsidyHalvingInterval = 12'500'000; // ~3.96 years at 10s blocks; 2 * 20 * 12.5M = 500M OCT
+         consensus.BIP34Height = 1;
+         consensus.BIP34Hash = uint256{};
+         consensus.BIP65Height = 1;
+@@ -497,7 +500,8 @@ public:
+         m_chain_type = ChainType::SIGNET;
+         consensus.signet_blocks = true;
+         consensus.signet_challenge.assign(bin.begin(), bin.end());
+-        consensus.nSubsidyHalvingInterval = 210000;
++        consensus.nInitialSubsidy = 20 * COIN;
++        consensus.nSubsidyHalvingInterval = 12'500'000; // ~3.96 years at 10s blocks; 2 * 20 * 12.5M = 500M OCT
+         consensus.BIP34Height = 1;
+         consensus.BIP34Hash = uint256{};
+         consensus.BIP65Height = 1;
+@@ -587,6 +591,7 @@ public:
+         m_chain_type = ChainType::REGTEST;
+         consensus.signet_blocks = false;
+         consensus.signet_challenge.clear();
++        consensus.nInitialSubsidy = 50 * COIN;
+         consensus.nSubsidyHalvingInterval = 150;
+         consensus.BIP34Height = 1; // Always active unless overridden
+         consensus.BIP34Hash = uint256();
+diff --git a/src/test/compress_tests.cpp b/src/test/compress_tests.cpp
+index 7fefa46..4adcf58 100644
+--- a/src/test/compress_tests.cpp
++++ b/src/test/compress_tests.cpp
+@@ -20,7 +20,7 @@
+ // amounts 1 .. 10000
+ #define NUM_MULTIPLES_1BTC 10000
+ 
+-// amounts 50 .. 21000000
++// amounts 50 .. 500000000
+ #define NUM_MULTIPLES_50BTC 420000
+ 
+ BOOST_FIXTURE_TEST_SUITE(compress_tests, BasicTestingSetup)
+@@ -45,7 +45,7 @@ BOOST_AUTO_TEST_CASE(compress_amounts)
+     BOOST_CHECK(TestPair(         CENT,       0x7));
+     BOOST_CHECK(TestPair(         COIN,       0x9));
+     BOOST_CHECK(TestPair(      50*COIN,      0x32));
+-    BOOST_CHECK(TestPair(21000000*COIN, 0x1406f40));
++    BOOST_CHECK(TestPair(500000000*COIN, 0x1dcd6500));
+ 
+     for (uint64_t i = 1; i <= NUM_MULTIPLES_UNIT; i++)
+         BOOST_CHECK(TestEncode(i));
+diff --git a/src/test/validation_tests.cpp b/src/test/validation_tests.cpp
+index 268529f..91b4d85 100644
+--- a/src/test/validation_tests.cpp
++++ b/src/test/validation_tests.cpp
+@@ -24,7 +24,7 @@ BOOST_FIXTURE_TEST_SUITE(validation_tests, BasicTestingSetup)
+ static void TestBlockSubsidyHalvings(const Consensus::Params& consensusParams)
+ {
+     int maxHalvings = 64;
+-    CAmount nInitialSubsidy = 50 * COIN;
++    CAmount nInitialSubsidy = consensusParams.nInitialSubsidy;
+ 
+     CAmount nPreviousSubsidy = nInitialSubsidy * 2; // for height == 0
+     BOOST_CHECK_EQUAL(nPreviousSubsidy, nInitialSubsidy * 2);
+@@ -57,13 +57,14 @@ BOOST_AUTO_TEST_CASE(subsidy_limit_test)
+ {
+     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+     CAmount nSum = 0;
+-    for (int nHeight = 0; nHeight < 14000000; nHeight += 1000) {
++    // The subsidy reaches zero after 31 halvings (20 * COIN < 2^31 satoshis).
++    for (int nHeight = 0; nHeight < 31 * chainParams->GetConsensus().nSubsidyHalvingInterval; nHeight += 1000) {
+         CAmount nSubsidy = GetBlockSubsidy(nHeight, chainParams->GetConsensus());
+-        BOOST_CHECK(nSubsidy <= 50 * COIN);
++        BOOST_CHECK(nSubsidy <= 20 * COIN);
+         nSum += nSubsidy * 1000;
+         BOOST_CHECK(MoneyRange(nSum));
+     }
+-    BOOST_CHECK_EQUAL(nSum, CAmount{2099999997690000});
++    BOOST_CHECK_EQUAL(nSum, CAmount{49999999837500000});
+ }
+ 
+ BOOST_AUTO_TEST_CASE(signet_parse_tests)
+diff --git a/src/validation.cpp b/src/validation.cpp
+index c85a3af..5134ca2 100644
+--- a/src/validation.cpp
++++ b/src/validation.cpp
+@@ -1837,8 +1837,8 @@ CAmount GetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams)
+     if (halvings >= 64)
+         return 0;
+ 
+-    CAmount nSubsidy = 50 * COIN;
+-    // Subsidy is cut in half every 210,000 blocks which will occur approximately every 4 years.
++    CAmount nSubsidy = consensusParams.nInitialSubsidy;
++    // Subsidy is cut in half every nSubsidyHalvingInterval blocks.
+     nSubsidy >>= halvings;
+     return nSubsidy;
+ }
+diff --git a/test/functional/test_framework/compressor.py b/test/functional/test_framework/compressor.py
+index 1c30d74..bbbfa66 100644
+--- a/test/functional/test_framework/compressor.py
++++ b/test/functional/test_framework/compressor.py
+@@ -55,4 +55,4 @@ class TestFrameworkCompressor(unittest.TestCase):
+         check_amount(1000000, 0x7)
+         check_amount(COIN, 0x9)
+         check_amount(50*COIN, 0x32)
+-        check_amount(21000000*COIN, 0x1406f40)
++        check_amount(500000000*COIN, 0x1dcd6500)
+diff --git a/test/functional/test_framework/messages.py b/test/functional/test_framework/messages.py
+index c636a29..7b8da3f 100755
+--- a/test/functional/test_framework/messages.py
++++ b/test/functional/test_framework/messages.py
+@@ -43,7 +43,7 @@ MAX_BLOOM_FILTER_SIZE = 36000
+ MAX_BLOOM_HASH_FUNCS = 50
+ 
+ COIN = 100000000  # 1 btc in satoshis
+-MAX_MONEY = 21000000 * COIN
++MAX_MONEY = 500000000 * COIN
+ 
+ MAX_BIP125_RBF_SEQUENCE = 0xfffffffd  # Sequence number that is rbf-opt-in (BIP 125) and csv-opt-out (BIP 68)
+ MAX_SEQUENCE_NONFINAL = 0xfffffffe  # Sequence number that is csv-opt-out (BIP 68)
+@@ -719,7 +719,7 @@ class CTransaction:
+ 
+     def is_valid(self):
+         for tout in self.vout:
+-            if tout.nValue < 0 or tout.nValue > 21000000 * COIN:
++            if tout.nValue < 0 or tout.nValue > MAX_MONEY:
+                 return False
+         return True
+ 
+-- 
+2.55.0.windows.4
+

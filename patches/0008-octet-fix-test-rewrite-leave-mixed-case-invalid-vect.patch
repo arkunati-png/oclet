@@ -1,0 +1,82 @@
+From d71ccc22ebbcfe519b56ad21628d2ee64be3f169 Mon Sep 17 00:00:00 2001
+From: Abhishek Kunati <itsmekunati@gmail.com>
+Date: Thu, 5 Nov 2026 20:54:22 +0000
+Subject: [PATCH 8/8] octet: fix test rewrite (leave mixed-case invalid vectors
+ alone); fixture mock time after Octet genesis
+
+The previous address rewrite lowercased deliberately mixed-case bech32 vectors,
+making them valid. Re-done skipping mixed-case tokens. The unit test fixture
+clock was 2020-08-31, before the new genesis, so mined blocks were 'time-too-new';
+moved to 2026-11-06.
+---
+ src/test/data/key_io_invalid.json      | 4 ++--
+ src/test/util/setup_common.h           | 2 +-
+ test/functional/rpc_validateaddress.py | 6 +++---
+ 3 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/test/data/key_io_invalid.json b/src/test/data/key_io_invalid.json
+index 92d8fbb..df3be12 100644
+--- a/src/test/data/key_io_invalid.json
++++ b/src/test/data/key_io_invalid.json
+@@ -57,7 +57,7 @@
+         "tb1qlj8es50nc8j8r8xshrjgzmw5azx89efghmw8ju6zcqla0g6xcnrstsjz7k"
+     ],
+     [
+-        "octrt1qzwmyj0z924g7fzs5yvnrkc43y76rvyr2qygvd4"
++        "bcrt1qzwmyj0z924g7fzs5yvnrkc43y76RVyr2lh5t4r"
+     ],
+     [
+         "bc1qpu6d26mrulzetu4jqhd7rsunv9aqru26f5c4j8"
+@@ -129,7 +129,7 @@
+         "tb1ly0q7p"
+     ],
+     [
+-        "octrt1qdwttaw38uf42wxw40kwk3u8nguytqh3hefwuch"
++        "bcrt1qdwttaw38uf42wxw40kwk3u8nguyTQH3hx6jmqp"
+     ],
+     [
+         "bc1qtsvlht6730n04f2mpaj5vv8hrledn5n5ug8c79"
+diff --git a/src/test/util/setup_common.h b/src/test/util/setup_common.h
+index 7e76342..b83fe77 100644
+--- a/src/test/util/setup_common.h
++++ b/src/test/util/setup_common.h
+@@ -228,7 +228,7 @@ struct TestChain100Setup : public TestingSetup {
+      */
+     std::vector<CTransactionRef> PopulateMempool(FastRandomContext& det_rand, size_t num_transactions, bool submit);
+ 
+-    FakeNodeClock m_clock{std::chrono::seconds{1598887952}}; // 2020-08-31, arbitrary
++    FakeNodeClock m_clock{std::chrono::seconds{1793923200}}; // 2026-11-06, one day after the Octet regtest genesis
+     std::vector<CTransactionRef> m_coinbase_txns; // For convenience, coinbase transactions
+     CKey coinbaseKey; // private/public key needed to spend coinbase transactions
+ };
+diff --git a/test/functional/rpc_validateaddress.py b/test/functional/rpc_validateaddress.py
+index 901189f..7c9a062 100755
+--- a/test/functional/rpc_validateaddress.py
++++ b/test/functional/rpc_validateaddress.py
+@@ -37,12 +37,12 @@ INVALID_DATA = [
+         [],
+     ),
+     (
+-        "toct1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qxg5aly",
++        "tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sL5k7",
+         "Invalid or unsupported Segwit (Bech32) or Base58 encoding.",  # tb1, Mixed case
+         [],
+     ),
+     (
+-        "oct1qw508d6qejxtdg4y5r3zarvary0c5xw7kzgvg6j",
++        "BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3t4",
+         "Invalid character or mixed case",  # bc1, Mixed case, not in BIP 173 test vectors
+         [40],
+     ),
+@@ -110,7 +110,7 @@ INVALID_DATA = [
+         [],
+     ),
+     (
+-        "toct1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vquxf5p6",
++        "tb1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vq47Zagq",
+         "Invalid or unsupported Segwit (Bech32) or Base58 encoding.",  # tb1, Mixed case
+         [],
+     ),
+-- 
+2.55.0.windows.4
+
