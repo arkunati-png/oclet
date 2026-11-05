@@ -1,4 +1,4 @@
-# Octet (OCT)
+# Octet(OCT)
 
 A Bitcoin Core fork aiming at Satoshi's stated goals: peer-to-peer electronic cash and
 "one-CPU-one-vote". Mining uses RandomX (CPU-friendly, ASIC-resistant) and blocks target
